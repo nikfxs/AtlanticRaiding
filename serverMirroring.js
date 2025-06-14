@@ -16,7 +16,7 @@ const clientOptions = {
         UserManager: 20,
         ThreadManager: 0
     }),
-    partials: [Partials.Channel],
+    partials: [],
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
