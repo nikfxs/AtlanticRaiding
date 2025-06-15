@@ -52,7 +52,7 @@ async function fetchImageAsBuffer(url) {
 async function getOrCreateWebhook(channel, username, avatarURL) {
     if (!webhookCache[channel.id]) {
         const avatarBuffer = await fetchImageAsBuffer(avatarURL);
-        const webhook = await channel.createWebhook(username, {
+        const webhook = await channel.createWebhook('Mirroring', {
             avatar: `data:image/png;base64,${Buffer.from(avatarBuffer).toString('base64')}`
         });
         webhookCache[channel.id] = webhook;
@@ -96,11 +96,12 @@ sourceClient.on('messageCreate', async (message) => {
                     }
 
                     const embed = {
-                        description: `**${message.member ? message.member.displayName : message.author.username} (${message.author.username})**:\n${content}`,
-                        thumbnail: {
-                            url: avatarURL
-                        }
-                    };
+    description: `**${message.member ? message.member.displayName : message.author.username} (${message.author.username})**:\n${content}`,
+    thumbnail: {
+        url: avatarURL
+    },
+    color: 0x3498db 
+};
 
                     const files = [];
                     if (message.attachments.size > 0) {
