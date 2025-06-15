@@ -1,31 +1,8 @@
-const { Client, GatewayIntentBits, Partials, Options } = require('discord.js-selfbot-v13');
+const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 
-function noCache() {
-    return new Map();
-}
-
-const clientOptions = {
-    checkUpdate: false,
-    makeCache: Options.cacheWithLimits({
-        MessageManager: 0,
-        ChannelManager: 10,
-        GuildMemberManager: 0,
-        PresenceManager: 0,
-        ReactionManager: 0,
-        UserManager: 20,
-        ThreadManager: 0
-    }),
-    partials: [],
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
-};
-
-const sourceClient = new Client(clientOptions);
-const destinationClient = new Client(clientOptions);
+const sourceClient = new Client({ checkUpdate: false });
+const destinationClient = new Client({ checkUpdate: false });
 
 const Settings = {
     SourceToken: "SRCTOKEN",
@@ -62,10 +39,21 @@ const Settings = {
 
 const webhookCache = {};
 
+async function fetchImageAsBuffer(url) {
+    try {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        return response.data;
+    } catch (error) {
+        console.error(`Failed to fetch image from URL: ${url}`, error);
+        return null;
+    }
+}
+
 async function getOrCreateWebhook(channel, username, avatarURL) {
     if (!webhookCache[channel.id]) {
+        const avatarBuffer = await fetchImageAsBuffer(avatarURL);
         const webhook = await channel.createWebhook(username, {
-            avatar: avatarURL
+            avatar: `data:image/png;base64,${Buffer.from(avatarBuffer).toString('base64')}`
         });
         webhookCache[channel.id] = webhook;
     }
@@ -73,72 +61,73 @@ async function getOrCreateWebhook(channel, username, avatarURL) {
 }
 
 function replaceMentions(content, guild) {
-    return content.replace(/<@!?(\d+)>/g, async (match, userId) => {
-        try {
-            const member = await guild.members.fetch(userId);
+    return content.replace(/<@!?(\d+)>/g, (match, userId) => {
+        const member = guild.members.cache.get(userId);
+        if (member) {
             return `@${member.user.username}`;
-        } catch {
-            return match;
         }
+        return match;
     });
 }
 
 sourceClient.on('messageCreate', async (message) => {
-    const sourceSettings = Settings.Mirror.source.find(source =>
-        message.guild?.id === source.guildId && message.channel?.id === source.channelId
+    const sourceSettings = Settings.Mirror.source.find(source => 
+        message.guild.id === source.guildId && message.channel.id === source.channelId
     );
 
-    if (!sourceSettings || !message.guild) return;
+    if (sourceSettings) {
+        const destinationGuild = destinationClient.guilds.cache.get(sourceSettings.destination.guildId);
+        if (destinationGuild) {
+            const destinationChannel = destinationGuild.channels.cache.get(sourceSettings.destination.channelId);
+            if (destinationChannel) {
+                try {
+                    const avatarURL = message.author.displayAvatarURL({ format: 'png' });
+                    const webhook = await getOrCreateWebhook(destinationChannel, message.author.username, avatarURL);
 
-    try {
-        const destinationGuild = await destinationClient.guilds.fetch(sourceSettings.destination.guildId);
-        const destinationChannel = await destinationGuild.channels.fetch(sourceSettings.destination.channelId);
+                    let content = message.content || "";
+                    content = replaceMentions(content, message.guild);
 
-        const avatarURL = message.author.displayAvatarURL({ format: 'png' });
-        const webhook = await getOrCreateWebhook(destinationChannel, message.author.username, avatarURL);
+                    if (message.reference) {
+                        const repliedToMessage = await message.channel.messages.fetch(message.reference.messageId);
+                        if (repliedToMessage) {
+                            const repliedToUser = repliedToMessage.member ? repliedToMessage.member.displayName : repliedToMessage.author.username;
+                            content = `**Replying to ${repliedToUser}**: "${repliedToMessage.content}"\n\n${content}`;
+                        }
+                    }
 
-        let content = message.content || "";
-        content = await replaceMentions(content, message.guild);
+                    const embed = {
+                        description: `**${message.member ? message.member.displayName : message.author.username} (${message.author.username})**:\n${content}`,
+                        thumbnail: {
+                            url: avatarURL
+                        }
+                    };
 
-        if (message.reference?.messageId) {
-            try {
-                const repliedToMessage = await message.channel.messages.fetch(message.reference.messageId, { cache: false });
-                const repliedToUser = repliedToMessage.member?.displayName || repliedToMessage.author.username;
-                content = `**Replying to ${repliedToUser}**: "${repliedToMessage.content}"\n\n${content}`;
-            } catch {
-                
+                    const files = [];
+                    if (message.attachments.size > 0) {
+                        message.attachments.forEach(attachment => {
+                            files.push({ attachment: attachment.url, name: attachment.name });
+                        });
+                    }
+
+                    if (content.trim().length > 0 || files.length > 0) {
+                        await webhook.send({
+                            embeds: [embed],
+                            files: files
+                        });
+                    } else {
+                        console.error("Cannot send an empty message.");
+                    }
+                } catch (error) {
+                    console.error("Failed to send message to the destination channel:", error);
+                }
+            } else {
+                console.error("Destination channel not found");
             }
-        }
-
-        const embed = {
-            description: `**${message.member?.displayName || message.author.username} (${message.author.username})**:\n${content}`,
-            thumbnail: { url: avatarURL }
-        };
-
-        const files = message.attachments.map(att => ({
-            attachment: att.url,
-            name: att.name
-        }));
-
-        if (content.trim().length > 0 || files.length > 0) {
-            await webhook.send({
-                embeds: [embed],
-                files: files
-            });
         } else {
-            console.error("cant send an empty message");
+            console.error("Destination server not found");
         }
-    } catch (error) {
-        console.error("failed to forward message:", error);
     }
 });
-
-setInterval(() => {
-    for (const key in webhookCache) {
-        delete webhookCache[key];
-    }
-    console.log("webhook cache cleared");
-}, 1000 * 60 * 10);
 
 sourceClient.login(Settings.SourceToken);
 destinationClient.login(Settings.DestinationToken);
